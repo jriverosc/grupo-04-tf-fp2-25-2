@@ -10,7 +10,8 @@ class Observador(ABC):
 
 class AlertaStockMinimo(Observador):
     def actualizar(self, producto):
-        # Esta función se mantiene para el patrón Observer pero no se usa para mostrar mensajes
+        # Se deja para el patrón Observer (p. ej. enviar correo o log)
+        # Aquí no mostramos mensajes automáticos para mantenerlo simple
         pass
 
 # Clase Producto
@@ -24,6 +25,8 @@ class Producto:
         self.__costo_unitario = costo_unitario
         self.__stock_actual = 0
         self.__observadores = []
+        # MULTIPLICIDAD: cada producto mantiene su propia lista de movimientos
+        self.__movimientos = []
 
     # Getters
     @property
@@ -68,14 +71,60 @@ class Producto:
     def verificar_stock_minimo(self):
         return self.__stock_actual <= self.__stock_minimo
 
+    def agregar_movimiento(self, movimiento):
+        """Registrar un movimiento dentro del producto (multiplicidad)"""
+        self.__movimientos.append(movimiento)
+
+    def obtener_movimientos(self):
+        return list(self.__movimientos)
+
     def __str__(self):
         estado = "BAJO" if self.verificar_stock_minimo() else "OK"
         return f"{self.__codigo} - {self.__nombre} | Categoria: {self.__categoria} | Stock: {self.__stock_actual} | Minimo: {self.__stock_minimo} | Estado: {estado}"
 
-# Clase Movimiento (Patrón Factory)
+# ======================================================================
+#   SUBCLASES DE PRODUCTO (POLIMORFISMO)
+# ======================================================================
+
+# Producto Perecible: tiene fecha de vencimiento
+class ProductoPerecible(Producto):
+    def __init__(self, codigo, nombre, categoria, stock_minimo, proveedor, costo_unitario, fecha_vencimiento):
+        super().__init__(codigo, nombre, categoria, stock_minimo, proveedor, costo_unitario)
+        # fecha_vencimiento debe ser datetime.date o datetime.datetime
+        self.__fecha_vencimiento = fecha_vencimiento
+
+    def esta_vencido(self):
+        hoy = datetime.datetime.now().date()
+        # compatibilizar si fecha es datetime o date
+        fecha = self.__fecha_vencimiento
+        if isinstance(fecha, datetime.datetime):
+            fecha = fecha.date()
+        return fecha < hoy
+
+    def __str__(self):
+        base = super().__str__()
+        fecha_str = self.__fecha_vencimiento.strftime('%Y-%m-%d') if self.__fecha_vencimiento else "N/A"
+        vencido = " (VENCIDO)" if self.esta_vencido() else ""
+        return f"{base} | Vence: {fecha_str}{vencido}"
+
+
+# Producto Importado: tiene un impuesto adicional
+class ProductoImportado(Producto):
+    def __init__(self, codigo, nombre, categoria, stock_minimo, proveedor, costo_unitario, impuesto):
+        super().__init__(codigo, nombre, categoria, stock_minimo, proveedor, costo_unitario)
+        self.__impuesto = impuesto  # Ejemplo: 0.18 para 18%
+
+    def costo_con_impuesto(self):
+        return self.costo_unitario * (1 + self.__impuesto)
+
+    def __str__(self):
+        base = super().__str__()
+        return f"{base} | Impuesto: {self.__impuesto*100:.0f}% | Costo final: {self.costo_con_impuesto():.2f}"
+
+# Clase Movimiento (Factory)
 class Movimiento:
     def __init__(self, tipo, producto, cantidad, fecha=None, usuario="Sistema"):
-        self.__tipo = tipo  # 'ingreso' o 'salida'
+        self.__tipo = tipo  # 'ingreso_...' o 'salida_...'
         self.__producto = producto
         self.__cantidad = cantidad
         self.__fecha = fecha if fecha else datetime.datetime.now()
@@ -104,7 +153,8 @@ class Movimiento:
 
     @staticmethod
     def crear_movimiento(tipo, producto, cantidad, usuario="Sistema"):
-        return Movimiento(tipo, producto, cantidad, usuario=usuario)
+        # CORRECCIÓN: pasar None explícito para fecha, y usuario en su posición correcta
+        return Movimiento(tipo, producto, cantidad, None, usuario)
 
     def __str__(self):
         return f"{self.__fecha.strftime('%Y-%m-%d %H:%M')} | {self.__tipo.upper()} | {self.__producto.nombre} | Cantidad: {self.__cantidad} | Usuario: {self.__usuario}"
@@ -121,12 +171,24 @@ class SistemaInventario:
             cls.__instancia.__alertas = AlertaStockMinimo()
         return cls.__instancia
 
-    def registrar_producto(self, codigo, nombre, categoria, stock_minimo, proveedor, costo_unitario=0):
+    def registrar_producto(self, codigo, nombre, categoria, stock_minimo, proveedor, costo_unitario=0, tipo_extra=None):
+        """
+        tipo_extra: dict para crear subclases. Ej:
+           None -> Producto normal
+           {"perecible": fecha_vencimiento}
+           {"importado": impuesto}
+        """
         if codigo in self.__productos:
             print("Error: El codigo del producto ya existe")
             return None
-        
-        producto = Producto(codigo, nombre, categoria, stock_minimo, proveedor, costo_unitario)
+
+        if tipo_extra and "perecible" in tipo_extra:
+            producto = ProductoPerecible(codigo, nombre, categoria, stock_minimo, proveedor, costo_unitario, tipo_extra["perecible"])
+        elif tipo_extra and "importado" in tipo_extra:
+            producto = ProductoImportado(codigo, nombre, categoria, stock_minimo, proveedor, costo_unitario, tipo_extra["importado"])
+        else:
+            producto = Producto(codigo, nombre, categoria, stock_minimo, proveedor, costo_unitario)
+
         producto.agregar_observador(self.__alertas)
         self.__productos[codigo] = producto
         return producto
@@ -144,44 +206,48 @@ class SistemaInventario:
         if codigo_producto not in self.__productos:
             print("Error: Producto no encontrado")
             return None
-        
+
         producto = self.__productos[codigo_producto]
         movimiento = Movimiento.crear_movimiento(f"ingreso_{tipo_ingreso}", producto, cantidad, usuario)
         self.__movimientos.append(movimiento)
         producto.actualizar_stock(cantidad)
+        # MULTIPLICIDAD: registrar movimiento dentro del producto
+        producto.agregar_movimiento(movimiento)
         return movimiento
 
     def registrar_salida(self, codigo_producto, cantidad, tipo_salida="venta", usuario="Sistema"):
         if codigo_producto not in self.__productos:
             print("Error: Producto no encontrado")
             return None
-        
+
         producto = self.__productos[codigo_producto]
         if producto.stock_actual < cantidad:
             print("Error: Stock insuficiente para realizar la salida")
             return None
-        
+
         movimiento = Movimiento.crear_movimiento(f"salida_{tipo_salida}", producto, -cantidad, usuario)
         self.__movimientos.append(movimiento)
         producto.actualizar_stock(-cantidad)
+        # MULTIPLICIDAD: registrar movimiento dentro del producto
+        producto.agregar_movimiento(movimiento)
         return movimiento
 
     def generar_reporte_stock(self):
         print("\n" + "="*80)
         print("REPORTE DE STOCK ACTUAL")
         print("="*80)
-        print(f"{'Codigo':<10} {'Nombre':<20} {'Categoria':<15} {'Stock':<8} {'Minimo':<8} {'Estado':<10}")
+        print(f"{'Codigo':<10} {'Nombre':<30} {'Categoria':<15} {'Stock':<8} {'Minimo':<8} {'Estado':<10}")
         print("-"*80)
-        
+
         productos_bajo_stock = []
-        
+
         for producto in self.__productos.values():
             estado = "BAJO" if producto.verificar_stock_minimo() else "OK"
-            print(f"{producto.codigo:<10} {producto.nombre:<20} {producto.categoria:<15} {producto.stock_actual:<8} {producto.stock_minimo:<8} {estado:<10}")
-            
+            print(f"{producto.codigo:<10} {producto.nombre:<30} {producto.categoria:<15} {producto.stock_actual:<8} {producto.stock_minimo:<8} {estado:<10}")
+
             if producto.verificar_stock_minimo():
                 productos_bajo_stock.append(producto)
-        
+
         # Mostrar alertas de stock mínimo al final
         if productos_bajo_stock:
             print("\n--- ALERTAS DE STOCK MINIMO ---")
@@ -192,21 +258,21 @@ class SistemaInventario:
         print("\n" + "="*80)
         print("LISTA COMPLETA DE PRODUCTOS")
         print("="*80)
-        print(f"{'Codigo':<10} {'Nombre':<20} {'Categoria':<15} {'Stock':<8} {'Minimo':<8} {'Estado':<10}")
+        print(f"{'Codigo':<10} {'Nombre':<30} {'Categoria':<15} {'Stock':<8} {'Minimo':<8} {'Estado':<10}")
         print("-"*80)
-        
+
         productos_bajo_stock = []
-        
+
         # Ordenar productos por nombre
         productos_ordenados = sorted(self.__productos.values(), key=lambda x: x.nombre)
-        
+
         for producto in productos_ordenados:
             estado = "BAJO" if producto.verificar_stock_minimo() else "OK"
-            print(f"{producto.codigo:<10} {producto.nombre:<20} {producto.categoria:<15} {producto.stock_actual:<8} {producto.stock_minimo:<8} {estado:<10}")
-            
+            print(f"{producto.codigo:<10} {producto.nombre:<30} {producto.categoria:<15} {producto.stock_actual:<8} {producto.stock_minimo:<8} {estado:<10}")
+
             if producto.verificar_stock_minimo():
                 productos_bajo_stock.append(producto)
-        
+
         # Mostrar alertas de stock mínimo al final
         if productos_bajo_stock:
             print("\n--- ALERTAS DE STOCK MINIMO ---")
@@ -218,46 +284,50 @@ class SistemaInventario:
         print("\n" + "="*60)
         print("VALOR DEL INVENTARIO")
         print("="*60)
-        print(f"{'Producto':<20} {'Stock':<8} {'Costo Unit.':<12} {'Valor Total':<12}")
+        print(f"{'Producto':<30} {'Stock':<8} {'Costo Unit.':<12} {'Valor Total':<12}")
         print("-"*60)
-        
+
         for producto in self.__productos.values():
-            valor_producto = producto.stock_actual * producto.costo_unitario
+            # si es importado, usar costo_con_impuesto si existe (polimorfismo)
+            costo_unit = producto.costo_unitario
+            if hasattr(producto, "costo_con_impuesto"):
+                costo_unit = producto.costo_con_impuesto()
+            valor_producto = producto.stock_actual * costo_unit
             valor_total += valor_producto
-            print(f"{producto.nombre:<20} {producto.stock_actual:<8} ${producto.costo_unitario:<11.2f} ${valor_producto:<11.2f}")
-        
+            print(f"{producto.nombre:<30} {producto.stock_actual:<8} ${costo_unit:<11.2f} ${valor_producto:<11.2f}")
+
         print("-"*60)
         print(f"{'VALOR TOTAL DEL INVENTARIO:':<40} ${valor_total:.2f}")
 
     def obtener_historial_movimientos(self, codigo_producto=None, fecha_inicio=None, fecha_fin=None):
         movimientos_filtrados = self.__movimientos
-        
+
         if codigo_producto:
             movimientos_filtrados = [m for m in movimientos_filtrados if m.producto.codigo == codigo_producto]
-        
+
         if fecha_inicio:
             movimientos_filtrados = [m for m in movimientos_filtrados if m.fecha >= fecha_inicio]
-        
+
         if fecha_fin:
             movimientos_filtrados = [m for m in movimientos_filtrados if m.fecha <= fecha_fin]
-        
+
         return movimientos_filtrados
 
     def mostrar_historial(self, codigo_producto=None):
         historial = self.obtener_historial_movimientos(codigo_producto)
-        
+
         if codigo_producto:
             producto = self.__productos.get(codigo_producto)
             titulo = f"HISTORIAL DE MOVIMIENTOS - {producto.nombre if producto else codigo_producto}"
         else:
             titulo = "HISTORIAL COMPLETO DE MOVIMIENTOS"
-        
+
         print(f"\n{titulo}")
         print("="*80)
         if not historial:
             print("No hay movimientos registrados")
             return
-        
+
         for movimiento in historial:
             print(movimiento)
 
@@ -270,7 +340,14 @@ class SistemaInventario:
         print(f"Stock actual: {producto.stock_actual}")
         print(f"Stock minimo: {producto.stock_minimo}")
         print(f"Costo unitario: ${producto.costo_unitario:.2f}")
-        
+
+        # mostrar movimientos del producto (multiplicidad)
+        movimientos = producto.obtener_movimientos()
+        if movimientos:
+            print("\nMovimientos del producto:")
+            for m in movimientos:
+                print(f"  - {m}")
+
         if producto.verificar_stock_minimo():
             print(f"\nALERTA: El producto {producto.nombre} esta por debajo del stock minimo, Stock = {producto.stock_actual}")
 
@@ -322,7 +399,7 @@ class MenuSistema:
                 break
             else:
                 print("Opcion invalida. Por favor, seleccione 1-9")
-            
+
             input("\nPresione Enter para continuar...")
 
     def registrar_producto(self):
@@ -333,8 +410,23 @@ class MenuSistema:
         stock_minimo = int(input("Stock minimo: "))
         proveedor = input("Proveedor: ")
         costo_unitario = float(input("Costo unitario: "))
-        
-        producto = self.__sistema.registrar_producto(codigo, nombre, categoria, stock_minimo, proveedor, costo_unitario)
+
+        print("Tipo de producto:")
+        print("1. Normal")
+        print("2. Perecible")
+        print("3. Importado")
+        tipo = input("Seleccione tipo (1-3): ")
+
+        tipo_extra = None
+        if tipo == "2":
+            fecha_str = input("Fecha de vencimiento (YYYY-MM-DD): ")
+            fecha_venc = datetime.datetime.strptime(fecha_str, "%Y-%m-%d")
+            tipo_extra = {"perecible": fecha_venc}
+        elif tipo == "3":
+            impuesto = float(input("Impuesto (ej: 0.18 para 18%): "))
+            tipo_extra = {"importado": impuesto}
+
+        producto = self.__sistema.registrar_producto(codigo, nombre, categoria, stock_minimo, proveedor, costo_unitario, tipo_extra)
         if producto:
             print(f"Producto '{producto.nombre}' registrado exitosamente")
 
@@ -347,14 +439,14 @@ class MenuSistema:
 
         criterios = {"1": "codigo", "2": "nombre", "3": "categoria"}
         criterio = criterios.get(opcion)
-        
+
         if not criterio:
             print("Opcion invalida")
             return
 
         valor = input("Ingrese el valor a buscar: ")
         resultados = self.__sistema.buscar_producto(criterio, valor)
-        
+
         if resultados:
             print(f"\nProductos encontrados ({len(resultados)}):")
             for producto in resultados:
@@ -369,7 +461,7 @@ class MenuSistema:
         cantidad = int(input("Cantidad: "))
         tipo = input("Tipo de ingreso (compra/devolucion/ajuste/traslado): ").lower()
         usuario = input("Usuario que registra: ") or "Sistema"
-        
+
         movimiento = self.__sistema.registrar_ingreso(codigo, cantidad, tipo, usuario)
         if movimiento:
             print(f"Ingreso registrado: {movimiento}")
@@ -380,7 +472,7 @@ class MenuSistema:
         cantidad = int(input("Cantidad: "))
         tipo = input("Tipo de salida (venta/ajuste/traslado): ").lower()
         usuario = input("Usuario que registra: ") or "Sistema"
-        
+
         movimiento = self.__sistema.registrar_salida(codigo, cantidad, tipo, usuario)
         if movimiento:
             print(f"Salida registrada: {movimiento}")
@@ -410,31 +502,25 @@ class MenuSistema:
 
 # Función principal
 def main():
-    # Crear algunos datos de ejemplo
     sistema = SistemaInventario()
-    
-    # Productos de ejemplo
-    productos_ejemplo = [
-        ("AC001", "Tornillo Acero 5mm", "Tornilleria", 100, "Aceros SAC", 0.50),
-        ("PL002", "Placa Aluminio 2x1m", "Planchas", 10, "Aluminios Peru", 25.00),
-        ("HR003", "Herramienta Cortadora", "Herramientas", 5, "Herramental SA", 15.75)
-    ]
-    
-    for prod in productos_ejemplo:
-        try:
-            sistema.registrar_producto(*prod)
-            # Registrar algunos movimientos de ejemplo
-            sistema.registrar_ingreso(prod[0], prod[3] * 2, "compra")
-        except:
-            pass
-    
-    #EXCEPCIONES
 
-    
+    # Productos de ejemplo (incluye un perecible y un importado)
+    try:
+        sistema.registrar_producto("AC001", "Tornillo Acero 5mm", "Tornilleria", 100, "Aceros SAC", 0.50)
+        sistema.registrar_producto("PL002", "Placa Aluminio 2x1m", "Planchas", 10, "Aluminios Peru", 25.00)
+        
+        # Importado
+        sistema.registrar_producto("IM001", "Taladro Bosch", "Herramientas", 3, "Bosch Import", 120.00, {"importado": 0.18})
 
-    #COMPOSICION
+        # Registrar algunos movimientos de ejemplo
+        sistema.registrar_ingreso("AC001", 200, "compra")
+        sistema.registrar_ingreso("PL002", 20, "compra")
+        sistema.registrar_ingreso("PE001", 50, "compra")
+        sistema.registrar_ingreso("IM001", 5, "compra")
 
-
+    except Exception as e:
+        # para evitar que la ejecución se detenga en el ejemplo
+        print("Error en datos de ejemplo:", e)
 
     # Iniciar el menú
     menu = MenuSistema()
