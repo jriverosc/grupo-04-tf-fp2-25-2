@@ -72,6 +72,16 @@ class Producto:
         estado = "BAJO" if self.verificar_stock_minimo() else "OK"
         return f"{self.__codigo} - {self.__nombre} | Categoria: {self.__categoria} | Stock: {self.__stock_actual} | Minimo: {self.__stock_minimo} | Estado: {estado}"
 
+class Proveedor:
+    def __init__(self, nombre, ruc, telefono):
+        self.nombre = nombre
+        self.ruc = ruc
+        self.telefono = telefono
+
+    def __str__(self):
+        return f"{self.nombre} (RUC: {self.ruc}, Tel: {self.telefono})"
+
+
 # Clase Movimiento (Patrón Factory)
 class Movimiento:
     def __init__(self, tipo, producto, cantidad, fecha=None, usuario="Sistema"):
